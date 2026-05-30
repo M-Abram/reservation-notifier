@@ -215,18 +215,18 @@ def check_dependencies() -> int:
 
     print("Reservation notifier — dependency check\n")
     py = sys.version_info
-    if py < (3, 7):
-        bad(f"Python {py.major}.{py.minor} is too old (need 3.7+). Try: python3.8 -m venv .venv")
+    if py < (3, 6):
+        bad(f"Python {py.major}.{py.minor} is too old (need 3.6+).")
     elif py < (3, 8):
-        print(f"  WARN  Python {py.major}.{py.minor} — 3.8+ recommended")
+        print(f"  WARN  Python {py.major}.{py.minor} — using selenium 3.x (see requirements-legacy.txt)")
     else:
         good(f"Python {py.major}.{py.minor}.{py.micro}")
 
     try:
         import httpx  # noqa: F401
-        import selenium  # noqa: F401
+        import selenium
 
-        good(f"Python packages (httpx, selenium)")
+        good(f"Python packages (httpx, selenium {selenium.__version__})")
     except ImportError as e:
         bad(f"Missing package: {e}. Run: pip install -r requirements.txt && pip install -e .")
 

@@ -1,4 +1,3 @@
-# httpx: Resy search + webhooks; selenium: headless Chrome checks.
-# Pinned for older Linux/Jetson (Python 3.7+). Use a venv: python3 -m venv .venv
+# Python 3.8+ (recommended)
 httpx>=0.22.0
 selenium>=4.9.0

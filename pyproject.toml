@@ -7,10 +7,11 @@ name = "reservation-notifier"
 version = "0.1.0"
 description = "Poll Resy (or compatible) availability and send notifications"
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.6"
 dependencies = [
   "httpx>=0.22.0",
-  "selenium>=4.9.0",
+  "selenium>=4.9.0; python_version >= '3.8'",
+  "selenium>=3.141.0,<4; python_version < '3.8'",
 ]
 
 [project.scripts]

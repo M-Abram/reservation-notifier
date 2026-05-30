@@ -1,0 +1,3 @@
+# Python 3.6 / 3.7 (e.g. Jetson Nano with Ubuntu 18.04)
+httpx>=0.22.0
+selenium>=3.141.0,<4

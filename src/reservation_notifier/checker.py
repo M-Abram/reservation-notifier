@@ -152,19 +152,36 @@ def _venue_page_url(venue: Venue, day: date, party_size: int) -> str | None:
     )
 
 
+def _selenium_major() -> int:
+    try:
+        import selenium
+
+        head = selenium.__version__.split(".")[0]
+        return int(head) if head.isdigit() else 3
+    except Exception:
+        return 3
+
+
 def _build_chrome_driver(cfg: AppConfig):
     try:
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.chrome.service import Service
     except ImportError as e:
         raise RuntimeError(
             "Selenium is required. Install dependencies: pip install -r requirements.txt"
         ) from e
 
+    selenium_major = _selenium_major()
+    Service = None
+    if selenium_major >= 4:
+        try:
+            from selenium.webdriver.chrome.service import Service
+        except ImportError:
+            selenium_major = 3
+
     opts = Options()
     if cfg.checker.selenium_headless:
-        opts.add_argument("--headless=new")
+        opts.add_argument("--headless=new" if selenium_major >= 4 else "--headless")
     opts.add_argument("--window-size=1400,1000")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
@@ -211,13 +228,18 @@ def _build_chrome_driver(cfg: AppConfig):
             )
         log.info("Using chromedriver: %s", driver_path)
 
-    kwargs = {}
-    if driver_path:
-        kwargs["executable_path"] = driver_path
-    service = Service(**kwargs)
-
     try:
-        driver = webdriver.Chrome(service=service, options=opts)
+        if selenium_major >= 4 and Service is not None:
+            service_kwargs = {}
+            if driver_path:
+                service_kwargs["executable_path"] = driver_path
+            service = Service(**service_kwargs)
+            driver = webdriver.Chrome(service=service, options=opts)
+        else:
+            driver_kwargs = {"options": opts}
+            if driver_path:
+                driver_kwargs["executable_path"] = driver_path
+            driver = webdriver.Chrome(**driver_kwargs)
     except Exception as e:
         raise BrowserStartupError(format_browser_startup_error(e)) from e
     driver.set_page_load_timeout(cfg.checker.selenium_page_load_timeout)

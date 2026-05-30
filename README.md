@@ -25,15 +25,24 @@ sudo apt-get update && sudo apt-get install -y python3-tk
 ```bash
 git clone https://github.com/M-Abram/reservation-notifier.git
 cd reservation-notifier
-python3 -m venv .venv
+
+# Use Python 3.8 explicitly (important if `python3` is still 3.6 on the system):
+python3.8 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install -r requirements.txt
 ```
 
-Use **Python 3.8+** if you can (`python3.8 -m venv .venv` on Jetson). Python 3.7 works with the pinned deps above.
+Or let the launcher pick the newest Python (prefers `python3.8`, `python3.9`, … over plain `python3`):
 
-**Do not run `pip install` outside a venv** — if you see `Defaulting to user installation because normal site-packages is not writeable`, activate the venv first (`source .venv/bin/activate`) or use `./run-cli.sh`, which creates and uses `.venv` automatically.
+```bash
+chmod +x run-cli.sh
+./run-cli.sh --check-deps
+```
+
+If you already created `.venv` with old Python 3.6, delete it first: `rm -rf .venv`, then run `./run-cli.sh` again.
+
+**Do not run `pip install` outside a venv** — if you see `Defaulting to user installation because normal site-packages is not writeable`, activate the venv first (`source .venv/bin/activate`) or use `./run-cli.sh`.
 
 You do **not** need `pip install -e .` if you use the launcher scripts below (they set `PYTHONPATH` for you). Optional install for a global `reservation-notifier` command:
 
