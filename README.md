@@ -31,6 +31,10 @@ pip install -U pip
 pip install -r requirements.txt
 ```
 
+Use **Python 3.8+** if you can (`python3.8 -m venv .venv` on Jetson). Python 3.7 works with the pinned deps above.
+
+**Do not run `pip install` outside a venv** — if you see `Defaulting to user installation because normal site-packages is not writeable`, activate the venv first (`source .venv/bin/activate`) or use `./run-cli.sh`, which creates and uses `.venv` automatically.
+
 You do **not** need `pip install -e .` if you use the launcher scripts below (they set `PYTHONPATH` for you). Optional install for a global `reservation-notifier` command:
 
 ```bash

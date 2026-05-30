@@ -214,6 +214,13 @@ def check_dependencies() -> int:
         print(f"  FAIL  {msg}")
 
     print("Reservation notifier — dependency check\n")
+    py = sys.version_info
+    if py < (3, 7):
+        bad(f"Python {py.major}.{py.minor} is too old (need 3.7+). Try: python3.8 -m venv .venv")
+    elif py < (3, 8):
+        print(f"  WARN  Python {py.major}.{py.minor} — 3.8+ recommended")
+    else:
+        good(f"Python {py.major}.{py.minor}.{py.micro}")
 
     try:
         import httpx  # noqa: F401
