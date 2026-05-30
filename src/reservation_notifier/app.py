@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
 import sys
 import threading
 import time as time_mod
@@ -19,6 +20,7 @@ from reservation_notifier.config import (
     load_config,
     parse_args,
 )
+from reservation_notifier.checker import BrowserStartupError
 from reservation_notifier.notifier import notify
 from reservation_notifier.polling import poll_filtered
 from reservation_notifier.resy_search import search_nyc_venues
@@ -157,7 +159,13 @@ def _prompt_int(prompt: str, *, min_value: int, max_value: int) -> int:
 
 
 def _choose_venue_by_name(name: str) -> Venue:
-    hits = search_nyc_venues(name, per_page=5)
+    try:
+        hits = search_nyc_venues(name, per_page=5)
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not search Resy for {name!r}: {e}\n"
+            "Check network access and that api.resy.com is reachable."
+        ) from e
     if not hits:
         raise ValueError(f'No NYC matches found for "{name}". Try a different name.')
 
@@ -193,6 +201,78 @@ def _choose_venue_by_name(name: str) -> Venue:
         print("Invalid selection.")
 
 
+def check_dependencies() -> int:
+    """Print dependency status; return 0 if ready for interactive/loop mode."""
+    ok = True
+
+    def good(msg: str) -> None:
+        print(f"  OK  {msg}")
+
+    def bad(msg: str) -> None:
+        nonlocal ok
+        ok = False
+        print(f"  FAIL  {msg}")
+
+    print("Reservation notifier — dependency check\n")
+
+    try:
+        import httpx  # noqa: F401
+        import selenium  # noqa: F401
+
+        good(f"Python packages (httpx, selenium)")
+    except ImportError as e:
+        bad(f"Missing package: {e}. Run: pip install -r requirements.txt && pip install -e .")
+
+    try:
+        from reservation_notifier.browser_env import (
+            resolve_chrome_binary,
+            resolve_chromedriver_path,
+        )
+
+        chrome = resolve_chrome_binary()
+        driver = resolve_chromedriver_path()
+        if chrome and os.path.isfile(chrome):
+            good(f"Chrome/Chromium: {chrome}")
+        elif chrome:
+            bad(f"CHROME_BINARY set but file missing: {chrome}")
+        else:
+            bad("Chrome/Chromium not found (set CHROME_BINARY)")
+
+        if driver and os.path.isfile(driver):
+            good(f"chromedriver: {driver}")
+        elif driver:
+            bad(f"CHROMEDRIVER_PATH set but file missing: {driver}")
+        else:
+            print("  WARN  chromedriver not found — Selenium may auto-download on x86_64")
+            if sys.platform.startswith("linux") and platform.machine().lower() in {
+                "aarch64",
+                "arm64",
+                "armv7l",
+            }:
+                bad("ARM Linux usually needs CHROMEDRIVER_PATH set explicitly")
+    except Exception as e:
+        bad(f"Browser check failed: {e}")
+
+    try:
+        hits = search_nyc_venues("Lilia", per_page=1)
+        if hits:
+            good(f"Resy search API ({hits[0].name})")
+        else:
+            bad("Resy search API returned no NYC results for 'Lilia'")
+    except Exception as e:
+        bad(f"Resy search API: {e}")
+
+    if not ok:
+        print("\nLinux setup hint:\n")
+        from reservation_notifier.browser_env import linux_browser_setup_hint
+
+        print(linux_browser_setup_hint())
+        return 1
+
+    print("\nReady. Run: python -m reservation_notifier --interactive")
+    return 0
+
+
 def run_interactive() -> None:
     print(_title("NYC reservation check (interactive)"), flush=True)
     print("", flush=True)
@@ -208,7 +288,11 @@ def run_interactive() -> None:
     end_t = _prompt_hhmm(_prompt_label("Time window end") + " (HH:MM): ")
     print("", flush=True)
 
-    venue = _choose_venue_by_name(restaurant)
+    try:
+        venue = _choose_venue_by_name(restaurant)
+    except (RuntimeError, ValueError) as e:
+        print(_error(str(e)), flush=True)
+        sys.exit(1)
 
     print(_title("Searching"), flush=True)
     print(f"  - Venue: {venue.name} ({venue.city_url_slug}/venues/{venue.url_slug})", flush=True)
@@ -242,6 +326,9 @@ def run_interactive() -> None:
             slots = poll_filtered(cfg)
         except KeyboardInterrupt:
             raise
+        except BrowserStartupError as e:
+            print(_error(str(e)), flush=True)
+            sys.exit(1)
         except Exception:
             poll_ok = False
             log.exception("Poll iteration failed; will retry after interval")
@@ -304,6 +391,8 @@ def run_loop(config_path: Path) -> None:
 def main(argv: list[str] | None = None) -> None:
     prepare_tk_environment()
     args = parse_args(argv)
+    if args.check_deps:
+        sys.exit(check_dependencies())
     if args.gui:
         try:
             from reservation_notifier.gui_mode import run_gui_mode

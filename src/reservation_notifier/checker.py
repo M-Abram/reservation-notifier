@@ -8,10 +8,20 @@ import time as time_mod
 from datetime import date, datetime, time, timedelta
 from typing import List, Mapping, Optional, Sequence
 
+from reservation_notifier.browser_env import (
+    format_browser_startup_error,
+    is_linux,
+    linux_browser_setup_hint,
+    resolve_chrome_binary,
+    resolve_chromedriver_path,
+)
 from reservation_notifier.config import AppConfig, Venue
 from reservation_notifier.models import Slot
 
 log = logging.getLogger(__name__)
+
+class BrowserStartupError(RuntimeError):
+    """Chrome/Chromium or chromedriver could not be started."""
 
 _active_driver: Optional[object] = None
 _active_driver_lock = threading.Lock()
@@ -159,6 +169,8 @@ def _build_chrome_driver(cfg: AppConfig):
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
+    if is_linux():
+        opts.add_argument("--disable-setuid-sandbox")
     lang = cfg.checker.selenium_accept_language.strip() or "en-US,en;q=0.9"
     opts.add_argument(f"--lang={lang.split(',')[0].strip()}")
     opts.add_experimental_option(
@@ -169,28 +181,45 @@ def _build_chrome_driver(cfg: AppConfig):
     if ua:
         opts.add_argument(f"--user-agent={ua}")
 
-    chrome_bin = (
-        os.environ.get("CHROME_BINARY")
-        or os.environ.get("CHROMIUM_BIN")
-        or os.environ.get("GOOGLE_CHROME_BIN")
-        or cfg.checker.selenium_chrome_binary
+    chrome_bin = resolve_chrome_binary(
+        (
+            os.environ.get("CHROME_BINARY")
+            or os.environ.get("CHROMIUM_BIN")
+            or os.environ.get("GOOGLE_CHROME_BIN")
+            or cfg.checker.selenium_chrome_binary
+            or ""
+        )
     )
-    chrome_bin = chrome_bin.strip() if chrome_bin else ""
     if chrome_bin:
+        if not os.path.isfile(chrome_bin):
+            raise BrowserStartupError(
+                f"Chrome binary not found at {chrome_bin!r}.\n\n{linux_browser_setup_hint()}"
+            )
         opts.binary_location = chrome_bin
+        log.info("Using Chrome/Chromium binary: %s", chrome_bin)
+    elif is_linux():
+        log.warning(
+            "No Chrome/Chromium binary found on PATH. Selenium will try its default; "
+            "on Linux set CHROME_BINARY (see --check-deps)."
+        )
 
-    driver_path = (
-        os.environ.get("CHROMEDRIVER_PATH")
-        or cfg.checker.selenium_chromedriver_path
-        or ""
-    ).strip()
+    driver_path = resolve_chromedriver_path(cfg.checker.selenium_chromedriver_path or "")
+    if driver_path:
+        if not os.path.isfile(driver_path):
+            raise BrowserStartupError(
+                f"chromedriver not found at {driver_path!r}.\n\n{linux_browser_setup_hint()}"
+            )
+        log.info("Using chromedriver: %s", driver_path)
 
     kwargs = {}
     if driver_path:
         kwargs["executable_path"] = driver_path
     service = Service(**kwargs)
 
-    driver = webdriver.Chrome(service=service, options=opts)
+    try:
+        driver = webdriver.Chrome(service=service, options=opts)
+    except Exception as e:
+        raise BrowserStartupError(format_browser_startup_error(e)) from e
     driver.set_page_load_timeout(cfg.checker.selenium_page_load_timeout)
     wait = cfg.checker.selenium_implicit_wait
     if wait and wait > 0:
@@ -268,9 +297,10 @@ def fetch_available_slots(cfg: AppConfig) -> List[Slot]:
     driver = None
     try:
         driver = _build_chrome_driver(cfg)
-    except Exception:
-        log.exception("Failed to start Chrome/WebDriver (see README for Jetson setup)")
-        return out
+    except BrowserStartupError:
+        raise
+    except Exception as e:
+        raise BrowserStartupError(format_browser_startup_error(e)) from e
 
     party = cfg.checker.party_size
     post_wait = cfg.checker.selenium_post_load_wait_seconds

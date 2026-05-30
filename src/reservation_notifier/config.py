@@ -185,6 +185,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Log what would be checked without calling the checker",
     )
+    p.add_argument(
+        "--check-deps",
+        action="store_true",
+        help="Verify Python deps, Resy search API, and Chrome/chromedriver; then exit.",
+    )
     return p
 
 

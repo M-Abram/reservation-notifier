@@ -23,13 +23,39 @@ sudo apt-get update && sudo apt-get install -y python3-tk
 ## Setup on Jetson Nano
 
 ```bash
+git clone https://github.com/M-Abram/reservation-notifier.git
 cd reservation-notifier
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install -r requirements.txt
+```
+
+You do **not** need `pip install -e .` if you use the launcher scripts below (they set `PYTHONPATH` for you). Optional install for a global `reservation-notifier` command:
+
+```bash
+pip install -e .
 cp config.example.json config.json
 # Edit config.json with your venues, dates, and times
+```
+
+**Before your first run on Linux**, check dependencies:
+
+```bash
+python -m reservation_notifier --check-deps
+```
+
+If Chrome or chromedriver is missing, install them (Debian/Ubuntu example):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y chromium chromium-driver
+# Ubuntu 22.04 and older may use:
+# sudo apt-get install -y chromium-browser chromium-chromedriver
+
+export CHROME_BINARY=/usr/bin/chromium
+export CHROMEDRIVER_PATH=/usr/bin/chromedriver
+python -m reservation_notifier --check-deps
 ```
 
 Typical environment variables (optional; use if Selenium cannot find the browser or driver):
@@ -55,6 +81,24 @@ If `config.json` is missing (or you pass `--interactive`), the app will prompt f
 - Seats / party size
 - Date (format `YYYY-MM-DD`, e.g. `2026-05-30`)
 - Time window start/end (24h `HH:MM`, e.g. `19:00`)
+
+**Recommended on Linux** (avoids “no module named reservation_notifier”):
+
+```bash
+chmod +x run-cli.sh
+./run-cli.sh --interactive
+```
+
+Or with venv activated:
+
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+./run-cli.sh --check-deps
+./run-cli.sh --interactive
+```
+
+Direct module invocation (requires `pip install -e .` **or** `export PYTHONPATH=$PWD/src`):
 
 ```bash
 python -m reservation_notifier --interactive
