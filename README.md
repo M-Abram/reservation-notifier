@@ -42,6 +42,20 @@ chmod +x run-cli.sh
 
 If you already created `.venv` with old Python 3.6, delete it first: `rm -rf .venv`, then run `./run-cli.sh` again.
 
+### Python built without SSL (Jetson / custom builds)
+
+If you see `the ssl module in Python is not available`, that Python cannot use pip over HTTPS. Use **apt-installed** Python instead of a custom build:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv python3-pip python3-dev libssl-dev libffi-dev
+python3 -c "import ssl; print(ssl.OPENSSL_VERSION)"   # must succeed
+rm -rf .venv
+./run-cli.sh --check-deps
+```
+
+If `python3.9` fails the SSL test but `python3` passes, the launcher will prefer `python3` automatically.
+
 **Do not run `pip install` outside a venv** — if you see `Defaulting to user installation because normal site-packages is not writeable`, activate the venv first (`source .venv/bin/activate`) or use `./run-cli.sh`.
 
 You do **not** need `pip install -e .` if you use the launcher scripts below (they set `PYTHONPATH` for you). Optional install for a global `reservation-notifier` command:

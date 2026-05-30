@@ -223,6 +223,16 @@ def check_dependencies() -> int:
         good(f"Python {py.major}.{py.minor}.{py.micro}")
 
     try:
+        import ssl
+
+        good(f"SSL module ({ssl.OPENSSL_VERSION})")
+    except ImportError:
+        bad(
+            "Python SSL module missing — pip cannot install packages. "
+            "Install libssl-dev and use apt Python: sudo apt install python3-venv libssl-dev"
+        )
+
+    try:
         import httpx  # noqa: F401
         import selenium
 
