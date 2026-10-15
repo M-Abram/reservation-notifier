@@ -57,10 +57,20 @@ class CheckerSettings:
 class AppConfig:
     poll_interval_seconds: int
     venues: List[Venue]
-    date_range: DateRange
+    #: ``None`` means "today", re-evaluated on every poll so it rolls over at midnight.
+    date_range: DateRange | None
     time_windows: List[TimeWindow]
     notifications: NotificationSettings
     checker: CheckerSettings
+
+    def resolved_date_range(self) -> DateRange:
+        if self.date_range is not None:
+            return self.date_range
+        today = date.today()
+        return DateRange(start=today, end=today)
+
+    def date_range_passed(self) -> bool:
+        return self.resolved_date_range().end < date.today()
 
 
 def load_config(path: Path) -> AppConfig:
@@ -98,11 +108,15 @@ def load_config(path: Path) -> AppConfig:
             )
         )
 
-    dr = raw["date_range"]
-    date_range = DateRange(
-        start=date.fromisoformat(str(dr["start"])),
-        end=date.fromisoformat(str(dr["end"])),
-    )
+    dr = raw.get("date_range")
+    date_range = None  # default: today
+    if dr:
+        date_range = DateRange(
+            start=date.fromisoformat(str(dr["start"])),
+            end=date.fromisoformat(str(dr["end"])),
+        )
+        if date_range.start > date_range.end:
+            raise ValueError("date_range.start must not be after date_range.end")
 
     windows: List[TimeWindow] = []
     for w in raw.get("time_windows", []):

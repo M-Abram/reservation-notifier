@@ -16,14 +16,31 @@ NTFY_TOPIC_ENV = "NTFY_TOPIC"
 NTFY_SERVER_ENV = "NTFY_SERVER"
 
 
-def _notify_ntfy(slots: list[Slot]) -> None:
+def _post_ntfy(title: str, body: str, *, priority: str = "default", tags: str = "") -> None:
     topic = (os.environ.get(NTFY_TOPIC_ENV) or "").strip()
     if not topic:
+        log.info("%s not set — skipping ntfy push for %r.", NTFY_TOPIC_ENV, title)
         return
 
     server = (os.environ.get(NTFY_SERVER_ENV) or "https://ntfy.sh").strip().rstrip("/")
     url = f"{server}/{quote(topic, safe='')}"
+    headers = {
+        "Title": title,
+        "Priority": priority,
+        "Content-Type": "text/plain; charset=utf-8",
+    }
+    if tags:
+        headers["Tags"] = tags
 
+    try:
+        r = httpx.post(url, content=body.encode("utf-8"), headers=headers, timeout=30.0)
+        r.raise_for_status()
+        log.info("ntfy notification sent to topic %r (%s priority).", topic, priority)
+    except httpx.HTTPError as e:
+        log.warning("ntfy notify failed: %s", e)
+
+
+def _notify_ntfy(slots: list[Slot]) -> None:
     lines = []
     for s in slots:
         start_local = s.start.strftime("%Y-%m-%d %H:%M")
@@ -32,20 +49,14 @@ def _notify_ntfy(slots: list[Slot]) -> None:
             line += f"\n{s.resy_page_url}"
         lines.append(line)
     body = "Reservation slots:\n" + "\n".join(lines)
+    # High priority so phones alert audibly (default priority can arrive silently).
+    _post_ntfy("Resy: slots available", body, priority="high", tags="restaurant")
 
-    try:
-        r = httpx.post(
-            url,
-            content=body.encode("utf-8"),
-            headers={
-                "Title": "Resy: slots available",
-                "Content-Type": "text/plain; charset=utf-8",
-            },
-            timeout=30.0,
-        )
-        r.raise_for_status()
-    except httpx.HTTPError as e:
-        log.warning("ntfy notify failed: %s", e)
+
+def notify_status(title: str, message: str, *, priority: str = "default", tags: str = "") -> None:
+    """Monitor health message (e.g. checks failing) — logged and sent to ntfy."""
+    log.warning("%s — %s", title, message.replace("\n", " "))
+    _post_ntfy(title, message, priority=priority, tags=tags)
 
 
 def notify(settings: NotificationSettings, slots: Iterable[Slot]) -> None:

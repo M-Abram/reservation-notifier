@@ -23,9 +23,12 @@ from reservation_notifier.config import (
     TimeWindow,
     Venue,
 )
-from reservation_notifier.checker import set_poll_abort_event, stop_active_browser
-from reservation_notifier.notifier import notify
-from reservation_notifier.polling import poll_filtered
+from reservation_notifier.checker import (
+    BrowserStartupError,
+    set_poll_abort_event,
+    stop_active_browser,
+)
+from reservation_notifier.polling import PollMonitor
 from reservation_notifier.resy_search import ResyVenueHit, search_nyc_venues
 from reservation_notifier.tty_logging import TtyColorFormatter
 
@@ -184,6 +187,8 @@ def _setup_dual_logging(text_widget: scrolledtext.ScrolledText, root: tk.Tk) -> 
     root_log.addHandler(gui_h)
     root_log.setLevel(logging.INFO)
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    # Stop force-closes chromedriver mid-request; urllib3's retry warnings are noise.
+    logging.getLogger("urllib3").setLevel(logging.ERROR)
 
 
 def _pick_hit_modal(parent: tk.Tk, hits: list[ResyVenueHit]) -> ResyVenueHit | None:
@@ -526,43 +531,58 @@ class ReservationGui:
         stop_active_browser()
         log.info("Stop requested — closing browser.")
 
+    def _set_status(self, text: str) -> None:
+        _run_on_ui(self.root, lambda: self.var_status.set(text))
+
     def _poll_loop(self) -> None:
         assert self._cfg is not None
         cfg = self._cfg
-        interval = max(5, cfg.poll_interval_seconds)
+        monitor = PollMonitor(cfg)
         set_poll_abort_event(self._stop)
         log.info(
             "Started search: %s | %s | seats=%s | window %s–%s | every %ss",
             cfg.venues[0].name,
-            cfg.date_range.start.isoformat(),
+            cfg.resolved_date_range().start.isoformat(),
             cfg.checker.party_size,
             cfg.time_windows[0].start.strftime("%H:%M"),
             cfg.time_windows[0].end.strftime("%H:%M"),
-            interval,
+            max(5, cfg.poll_interval_seconds),
         )
 
         try:
             while not self._stop.is_set():
+                if cfg.date_range_passed():
+                    log.warning("The search date has passed — stopping search.")
+                    self._set_status("Stopped — date has passed.")
+                    break
+
                 try:
-                    slots = poll_filtered(cfg)
-                except Exception:
-                    if not self._stop.is_set():
-                        log.exception("Poll iteration failed; retrying after wait")
-                    slots = []
+                    result = monitor.poll()
+                except BrowserStartupError as e:
+                    if self._stop.is_set():
+                        break
+                    monitor.record_failure(e)
+                    result = None
 
                 if self._stop.is_set():
                     break
 
-                if slots:
-                    notify(cfg.notifications, slots)
-                    log.info("Match found — stopping search.")
-                    _run_on_ui(self.root, lambda: self.var_status.set("Match found — notified."))
-                    break
+                if result is not None and result.new_slots:
+                    times = ", ".join(s.start.strftime("%H:%M") for s in result.slots)
+                    log.info("Match found — still watching for new times.")
+                    self._set_status(f"Open: {times} — notified. Still watching…")
+                elif result is not None and result.slots:
+                    times = ", ".join(s.start.strftime("%H:%M") for s in result.slots)
+                    log.info("No new matching slots (still open: %s).", times)
+                elif result is not None and result.error is None:
+                    log.info("No matching slots this run.")
+                    self._set_status("Searching… (click Stop to cancel)")
+                if monitor.failures:
+                    self._set_status(
+                        f"Checks failing ({monitor.failures} in a row) — retrying, see log."
+                    )
 
-                if self._stop.is_set():
-                    break
-                log.info("No matching slots this run.")
-                deadline = time_mod.monotonic() + interval
+                deadline = time_mod.monotonic() + monitor.next_wait_seconds()
                 while time_mod.monotonic() < deadline:
                     if self._stop.wait(0.25):
                         log.info("Stopped by user.")

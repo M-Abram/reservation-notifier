@@ -133,7 +133,7 @@ python -m reservation_notifier --interactive
 
 ### Desktop GUI mode (`--gui`)
 
-Opens a Tk window where you fill in restaurant, seats, date, time window, and poll interval, then **Start search** / **Stop search**. Logs appear in the window (and still go to the terminal’s stderr).
+Opens a Tk window where you fill in restaurant, seats, date, time window, and poll interval, then **Start search** / **Stop search**. The search keeps running after a match and notifies you each time a new time opens. Logs appear in the window (and still go to the terminal’s stderr).
 
 Requires a display / desktop session (or X forwarding) and Tk (see **Requirements**).
 
@@ -183,6 +183,8 @@ WorkingDirectory=%h/Documents/reservation-notifier
 ExecStart=%h/Documents/reservation-notifier/.venv/bin/python -m reservation_notifier --loop --config %h/Documents/reservation-notifier/config.json
 Restart=on-failure
 RestartSec=30
+# Exit code 2 = date range has passed; restarting won't help.
+RestartPreventExitStatus=2
 Environment=NTFY_TOPIC=your-secret-topic
 Environment=CHROME_BINARY=/usr/bin/chromium-browser
 Environment=CHROMEDRIVER_PATH=/usr/bin/chromedriver
@@ -207,7 +209,7 @@ See `config.example.json`. You define:
 - **venues**: each entry needs **`url_slug`** (path under `/venues/…`) and either **`city_url_slug`** (for example `new-york-ny`) or a **`location_shortcode`** we map (for example `ny` → `new-york-ny`). Optional numeric **`id`** is only used as an internal label in logs/slots.
 - **`checker.party_size`**: becomes the `seats=` query parameter on the Resy URL.
 - **`checker.selenium_*`**: headless mode, timeouts, extra wait after load (give client-side rendering time before scraping), optional explicit Chrome/chromedriver paths.
-- **date_range**: start/end dates (inclusive) to search
+- **date_range**: start/end dates (inclusive) to search. Optional — if omitted, it searches today (rolling over at midnight). `--loop` exits with code 2 once the range has passed.
 - **time_windows**: preferred local time ranges (24h `HH:MM`, inclusive)
 - **poll_interval_seconds**: delay between checks in loop mode
 - **notifications**: console and optional webhook URL
@@ -219,6 +221,12 @@ python -m reservation_notifier --loop
 ```
 
 See `config.example.json` as a starting point for automation / `--loop`.
+
+### Alerts and failures
+
+- You're notified whenever a matching time appears that wasn't open on the previous check. `--loop` saves the last check next to the config (`.config.state.json`), so a restart doesn't repeat alerts.
+- A page that fails to load, or that doesn't look like a Resy venue page (bot check, error page, layout change), counts as a failed check rather than "no slots". After 5 failed checks in a row you get a "Resy monitor failing" ntfy alert, and a "recovered" one when checks work again.
+- After failures, the wait between checks doubles each time (up to 10 minutes) to avoid hammering Resy.
 
 ## Project layout
 

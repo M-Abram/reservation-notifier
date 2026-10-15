@@ -20,9 +20,14 @@ from reservation_notifier.config import (
     load_config,
     parse_args,
 )
-from reservation_notifier.checker import BrowserStartupError
+from reservation_notifier.checker import BrowserStartupError, PollError, filter_slots
 from reservation_notifier.notifier import notify
-from reservation_notifier.polling import poll_filtered
+from reservation_notifier.polling import (
+    CONFIG_ERROR_EXIT_CODE,
+    PollMonitor,
+    PollResult,
+    poll_filtered,
+)
 from reservation_notifier.resy_search import search_nyc_venues
 from reservation_notifier.tty_logging import install_colored_stderr_logging
 
@@ -127,8 +132,11 @@ def _prompt_nonempty(prompt: str) -> str:
 
 
 def _prompt_date(prompt: str) -> date:
+    """Blank input means today."""
     while True:
-        s = _prompt_nonempty(prompt)
+        s = input(prompt).strip()
+        if not s:
+            return date.today()
         try:
             return date.fromisoformat(s)
         except ValueError:
@@ -300,7 +308,7 @@ def run_interactive() -> None:
 
     restaurant = _prompt_nonempty(_prompt_label("Restaurant name") + ": ")
     seats = _prompt_int(_prompt_label("Seats (party size)") + " [1-20]: ", min_value=1, max_value=20)
-    day = _prompt_date(_prompt_label("Date") + " (YYYY-MM-DD): ")
+    day = _prompt_date(_prompt_label("Date") + " (YYYY-MM-DD, blank = today): ")
     start_t = _prompt_hhmm(_prompt_label("Time window start") + " (HH:MM): ")
     end_t = _prompt_hhmm(_prompt_label("Time window end") + " (HH:MM): ")
     print("", flush=True)
@@ -331,59 +339,85 @@ def run_interactive() -> None:
         ),
     )
 
-    log.info("Polling every %ss until a match is found. Press Ctrl+C to stop.", cfg.poll_interval_seconds)
+    log.info(
+        "Polling every %ss; you'll be notified of each new matching time. Press Ctrl+C to stop.",
+        cfg.poll_interval_seconds,
+    )
+    monitor = PollMonitor(cfg)
     while True:
+        _exit_if_date_range_passed(cfg)
         stop_evt: threading.Event | None = None
         spin_thr: threading.Thread | None = None
-        slots: list = []
-        poll_ok = True
         try:
             if sys.stdout.isatty():
                 stop_evt, spin_thr = _start_stdout_spinner(f"Searching Resy ({venue.name}) in browser")
-            slots = poll_filtered(cfg)
-        except KeyboardInterrupt:
-            raise
+            result = monitor.poll()
         except BrowserStartupError as e:
             print(_error(str(e)), flush=True)
             sys.exit(1)
-        except Exception:
-            poll_ok = False
-            log.exception("Poll iteration failed; will retry after interval")
         finally:
             if stop_evt is not None and spin_thr is not None:
                 _stop_stdout_spinner(stop_evt, spin_thr)
 
-        if slots:
-            notify(cfg.notifications, slots)
-            return
+        _log_poll_result(result)
+        _sleep_until_next_poll(monitor.next_wait_seconds(), venue.name)
 
-        if poll_ok:
-            log.info("No matching slots this run.")
-        _sleep_until_next_poll(cfg.poll_interval_seconds, venue.name)
+
+def _log_poll_result(result: PollResult) -> None:
+    if result.new_slots:
+        log.info("Match found — still watching for new times.")
+    elif result.slots:
+        log.info("No new matching slots (still open: %d).", len(result.slots))
+    elif result.error is None:
+        log.info("No matching slots this run.")
+
+
+def _exit_if_date_range_passed(cfg: AppConfig) -> None:
+    if cfg.date_range_passed():
+        log.error(
+            "Date range ended %s — nothing left to search. Update the dates to keep monitoring.",
+            cfg.resolved_date_range().end.isoformat(),
+        )
+        sys.exit(CONFIG_ERROR_EXIT_CODE)
 
 
 def run_once(config_path: Path, *, dry_run: bool = False) -> None:
     cfg = load_config(config_path)
+    _exit_if_date_range_passed(cfg)
+    date_range = cfg.resolved_date_range()
     if dry_run:
         log.info(
             "Dry run: would poll %d venue(s), date %s..%s, interval=%ss",
             len(cfg.venues),
-            cfg.date_range.start.isoformat(),
-            cfg.date_range.end.isoformat(),
+            date_range.start.isoformat(),
+            date_range.end.isoformat(),
             cfg.poll_interval_seconds,
         )
         return
 
-    slots = poll_filtered(cfg)
+    error: PollError | None = None
+    try:
+        slots = poll_filtered(cfg)
+    except PollError as e:
+        log.error("Some pages could not be checked: %s", e)
+        slots = filter_slots(cfg, e.slots)
+        error = e
     if slots:
         notify(cfg.notifications, slots)
-    else:
+    elif error is None:
         log.info("No matching slots this run.")
+    if error is not None:
+        sys.exit(1)
+
+
+def state_path_for(config_path: Path) -> Path:
+    """Where ``--loop`` remembers the last poll's slots, so restarts don't re-notify."""
+    return config_path.with_name(f".{config_path.stem}.state.json")
 
 
 def run_loop(config_path: Path) -> None:
     cfg = load_config(config_path)
-    seen: set[str] = set()
+    monitor = PollMonitor(cfg, state_path=state_path_for(config_path))
 
     log.info(
         "Loop mode: %d venue(s), poll every %ss",
@@ -392,17 +426,13 @@ def run_loop(config_path: Path) -> None:
     )
 
     while True:
+        _exit_if_date_range_passed(cfg)
         try:
-            slots = poll_filtered(cfg)
-            new = [s for s in slots if s.key() not in seen]
-            for s in new:
-                seen.add(s.key())
-            if new:
-                notify(cfg.notifications, new)
-        except Exception:
-            log.exception("Poll iteration failed; will retry after interval")
+            _log_poll_result(monitor.poll())
+        except BrowserStartupError as e:
+            monitor.record_failure(e)
 
-        time_mod.sleep(max(5, cfg.poll_interval_seconds))
+        time_mod.sleep(monitor.next_wait_seconds())
 
 
 def main(argv: list[str] | None = None) -> None:

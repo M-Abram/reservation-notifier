@@ -23,6 +23,18 @@ log = logging.getLogger(__name__)
 class BrowserStartupError(RuntimeError):
     """Chrome/Chromium or chromedriver could not be started."""
 
+
+class PollError(RuntimeError):
+    """One or more venue pages failed to load or didn't look like a Resy booking page.
+
+    ``slots`` holds whatever was found on the pages that did work.
+    """
+
+    def __init__(self, message: str, slots: List[Slot]) -> None:
+        super().__init__(message)
+        self.slots = slots
+
+
 _active_driver: Optional[object] = None
 _active_driver_lock = threading.Lock()
 _poll_abort: Optional[threading.Event] = None
@@ -73,6 +85,11 @@ def _aborted() -> bool:
     return _poll_abort is not None and _poll_abort.is_set()
 
 
+def poll_aborted() -> bool:
+    """True once the GUI's Stop has been requested for the current poll."""
+    return _aborted()
+
+
 def _register_driver(driver: object) -> None:
     global _active_driver
     with _active_driver_lock:
@@ -88,6 +105,18 @@ _CITY_URL_SLUG_BY_LOCATION: Mapping[str, str] = {
 # Loose label like "7:00 PM" / "07:00PM"
 _TIME_LABEL_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*(AM|PM)\s*$", re.IGNORECASE)
 
+# Resy renders this ("Sorry, we don't currently have any tables available...")
+# when a day has no slots.
+_NO_AVAILABILITY_SELECTOR = ".ShiftInventory__availability-message"
+# The venue page's date picker. Some venues (e.g. Lilia) show only this, with no
+# slots and no message, when nothing is bookable. If even this is missing, the
+# page isn't a working Resy venue page (bot check, error page, bad URL).
+_BOOKING_WIDGET_SELECTOR = ".VenuePage__Calendar-Wrapper"
+# Extra time to wait for slots or the no-availability message after the
+# fixed post-load wait.
+_RENDER_TIMEOUT_SECONDS = 10.0
+_SCRIPT_TIMEOUT_SECONDS = 90
+
 
 def slot_in_time_windows(t: time, windows: List[tuple[time, time]]) -> bool:
     for start, end in windows:
@@ -98,9 +127,10 @@ def slot_in_time_windows(t: time, windows: List[tuple[time, time]]) -> bool:
 
 def filter_slots(cfg: AppConfig, slots: List[Slot]) -> List[Slot]:
     windows = [(w.start, w.end) for w in cfg.time_windows]
+    date_range = cfg.resolved_date_range()
     filtered: List[Slot] = []
     for s in slots:
-        if cfg.date_range.start <= s.start.date() <= cfg.date_range.end:
+        if date_range.start <= s.start.date() <= date_range.end:
             if slot_in_time_windows(s.start.time(), windows):
                 filtered.append(s)
     return filtered
@@ -180,6 +210,16 @@ def _build_chrome_driver(cfg: AppConfig):
             selenium_major = 3
 
     opts = Options()
+    # Return once the DOM is ready instead of waiting for every resource: Resy
+    # pages often never finish "loading" before the page-load timeout. The
+    # client-side render is waited for afterwards (``_wait_for_slot_labels``).
+    try:
+        if selenium_major >= 4:
+            opts.page_load_strategy = "eager"
+        else:
+            opts.set_capability("pageLoadStrategy", "eager")
+    except Exception:
+        log.debug("Could not set eager page load strategy", exc_info=True)
     if cfg.checker.selenium_headless:
         opts.add_argument("--headless=new" if selenium_major >= 4 else "--headless")
     opts.add_argument("--window-size=1400,1000")
@@ -243,6 +283,8 @@ def _build_chrome_driver(cfg: AppConfig):
     except Exception as e:
         raise BrowserStartupError(format_browser_startup_error(e)) from e
     driver.set_page_load_timeout(cfg.checker.selenium_page_load_timeout)
+    # Resy pages keep the renderer busy; reading them can exceed Selenium's 30s default.
+    driver.set_script_timeout(_SCRIPT_TIMEOUT_SECONDS)
     wait = cfg.checker.selenium_implicit_wait
     if wait and wait > 0:
         driver.implicitly_wait(wait)
@@ -267,7 +309,12 @@ for (const el of document.querySelectorAll(selectors)) {
   seen.add(key);
   out.push(normalized);
 }
-return out;
+// One round trip: Selenium commands on Resy pages can take many seconds each.
+return {
+  labels: out,
+  noAvailability: !!document.querySelector(arguments[0]),
+  bookingWidget: !!document.querySelector(arguments[1]),
+};
 """
 
 
@@ -300,15 +347,43 @@ def _dismiss_common_overlays(driver) -> None:
             continue
 
 
-def _scrape_slot_labels(driver) -> Sequence[str]:
-    raw = driver.execute_script(_SCRAPE_SCRIPT)
-    if not isinstance(raw, list):
-        return []
-    out: List[str] = []
-    for x in raw:
-        if isinstance(x, str):
-            out.append(x)
-    return out
+def _scrape_page(driver) -> tuple[List[str], bool, bool]:
+    """(time labels, no-availability message shown, booking widget shown)."""
+    raw = driver.execute_script(
+        _SCRAPE_SCRIPT, _NO_AVAILABILITY_SELECTOR, _BOOKING_WIDGET_SELECTOR
+    )
+    if not isinstance(raw, dict):
+        return [], False, False
+    labels = [x for x in raw.get("labels") or [] if isinstance(x, str)]
+    return labels, bool(raw.get("noAvailability")), bool(raw.get("bookingWidget"))
+
+
+def _first_line(error: BaseException) -> str:
+    """Selenium errors append long chromedriver stack traces; keep the message."""
+    return (str(error).strip().splitlines() or [type(error).__name__])[0]
+
+
+def _wait_for_slot_labels(driver) -> Optional[Sequence[str]]:
+    """Time labels once the page shows slots or Resy's no-availability message.
+
+    If neither appears within ``_RENDER_TIMEOUT_SECONDS``, returns ``[]`` when the
+    booking widget is present, or ``None`` when the page isn't a working venue page.
+    """
+    deadline = time_mod.monotonic() + _RENDER_TIMEOUT_SECONDS
+    while True:
+        labels, no_availability, booking_widget = _scrape_page(driver)
+        if labels:
+            return labels
+        if no_availability:
+            return []
+        if _aborted():
+            return None
+        if time_mod.monotonic() >= deadline:
+            return [] if booking_widget else None
+        if _poll_abort is not None:
+            _poll_abort.wait(0.5)
+        else:
+            time_mod.sleep(0.5)
 
 
 def fetch_available_slots(cfg: AppConfig) -> List[Slot]:
@@ -326,6 +401,9 @@ def fetch_available_slots(cfg: AppConfig) -> List[Slot]:
 
     party = cfg.checker.party_size
     post_wait = cfg.checker.selenium_post_load_wait_seconds
+    date_range = cfg.resolved_date_range()
+    first_day = max(date_range.start, date.today())  # past days can't be booked
+    errors: List[str] = []
 
     try:
         for venue in cfg.venues:
@@ -341,7 +419,7 @@ def fetch_available_slots(cfg: AppConfig) -> List[Slot]:
                 continue
             vid = venue.id or venue.url_slug
 
-            for day in _daterange_inclusive(cfg.date_range.start, cfg.date_range.end):
+            for day in _daterange_inclusive(first_day, date_range.end):
                 if _aborted():
                     break
                 url = _venue_page_url(venue, day, party)
@@ -352,7 +430,7 @@ def fetch_available_slots(cfg: AppConfig) -> List[Slot]:
                 except Exception as e:
                     if _aborted():
                         break
-                    log.warning("Page load failed %s: %s", url, e)
+                    errors.append(f"{venue.name} {day.isoformat()}: page load failed ({_first_line(e)})")
                     continue
 
                 if _aborted():
@@ -364,8 +442,23 @@ def fetch_available_slots(cfg: AppConfig) -> List[Slot]:
                     time_mod.sleep(post_wait)
                 if _aborted():
                     break
-                _dismiss_common_overlays(driver)
-                labels = _scrape_slot_labels(driver)
+                try:
+                    _dismiss_common_overlays(driver)
+                    found = _wait_for_slot_labels(driver)
+                except Exception as e:  # e.g. script timeout on a hung page
+                    if _aborted():
+                        break
+                    errors.append(f"{venue.name} {day.isoformat()}: page check failed ({_first_line(e)})")
+                    continue
+                if found is None:
+                    if _aborted():
+                        break
+                    errors.append(
+                        f"{venue.name} {day.isoformat()}: page not recognized — no time "
+                        f"slots or Resy booking widget (title {driver.title!r})"
+                    )
+                    continue
+                labels = found
 
                 parsed: List[datetime] = []
                 for label in labels:
@@ -404,4 +497,6 @@ def fetch_available_slots(cfg: AppConfig) -> List[Slot]:
                 except Exception:
                     pass
 
+    if errors and not _aborted():
+        raise PollError("; ".join(errors), out)
     return out

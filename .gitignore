@@ -6,3 +6,5 @@ config.json
 dist/
 build/
 .DS_Store
+# --loop state (see app.state_path_for)
+.*.state.json
