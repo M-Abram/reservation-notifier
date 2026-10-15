@@ -8,7 +8,13 @@ export TK_SILENCE_DEPRECATION=1
 # (and Finder launches) don't read. Pull them from an interactive zsh if unset.
 for var in NTFY_TOPIC NTFY_SERVER; do
   if [[ -z "${!var:-}" ]] && command -v zsh >/dev/null 2>&1; then
-    val="$(zsh -ic "printf %s \"\${$var:-}\"" 2>/dev/null </dev/null || true)"
+    # zsh startup files can print to stdout (e.g. Terminal's "Restored session:"),
+    # so keep only what follows a marker.
+    out="$(zsh -ic "printf '\\n__NTFY_VALUE__%s' \"\${$var:-}\"" 2>/dev/null </dev/null || true)"
+    val=""
+    if [[ "$out" == *__NTFY_VALUE__* ]]; then
+      val="${out##*__NTFY_VALUE__}"
+    fi
     if [[ -n "$val" ]]; then
       export "$var=$val"
     fi
