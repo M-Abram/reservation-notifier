@@ -28,6 +28,7 @@ from reservation_notifier.checker import (
     set_poll_abort_event,
     stop_active_browser,
 )
+from reservation_notifier.notifier import log_ntfy_status
 from reservation_notifier.polling import PollMonitor
 from reservation_notifier.resy_search import ResyVenueHit, search_nyc_venues
 from reservation_notifier.tty_logging import TtyColorFormatter
@@ -387,6 +388,7 @@ class ReservationGui:
 
         root.update_idletasks()
         log.info("GUI ready (layout v%s).", GUI_LAYOUT_VERSION)
+        log_ntfy_status()
 
     def _set_search_inputs_enabled(self, enabled: bool) -> None:
         entry_state = "normal" if enabled else "disabled"

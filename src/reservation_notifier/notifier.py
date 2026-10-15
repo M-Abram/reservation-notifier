@@ -16,6 +16,20 @@ NTFY_TOPIC_ENV = "NTFY_TOPIC"
 NTFY_SERVER_ENV = "NTFY_SERVER"
 
 
+def log_ntfy_status() -> None:
+    """Say up front whether push notifications will be sent (read from the environment)."""
+    topic = (os.environ.get(NTFY_TOPIC_ENV) or "").strip()
+    if topic:
+        server = (os.environ.get(NTFY_SERVER_ENV) or "https://ntfy.sh").strip().rstrip("/")
+        log.info("ntfy: notifications go to topic %r on %s.", topic, server)
+    else:
+        log.warning(
+            "ntfy: %s is not set — no push notifications will be sent. "
+            "Export it (e.g. in ~/.zshrc) and relaunch.",
+            NTFY_TOPIC_ENV,
+        )
+
+
 def _post_ntfy(title: str, body: str, *, priority: str = "default", tags: str = "") -> None:
     topic = (os.environ.get(NTFY_TOPIC_ENV) or "").strip()
     if not topic:
